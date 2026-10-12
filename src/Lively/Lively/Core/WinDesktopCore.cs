@@ -1,4 +1,4 @@
-﻿using Lively.Common;
+using Lively.Common;
 using Lively.Common.Com;
 using Lively.Common.Exceptions;
 using Lively.Common.Extensions;
@@ -112,6 +112,7 @@ namespace Lively.Core
             this.rawInput.MouseMoveRaw += RawInput_MouseMoveRaw;
             this.rawInput.MouseDownRaw += RawInput_MouseDownRaw;
             this.rawInput.MouseUpRaw += RawInput_MouseUpRaw;
+            this.rawInput.MouseWheelRaw += RawInput_MouseWheelRaw;
             this.rawInput.KeyboardClickRaw += RawInput_KeyboardClickRaw;
             this.screensaverIdleTimer.Elapsed += ScreensaverIdleTimer_Elapsed;
 
@@ -1212,6 +1213,32 @@ namespace Lively.Core
                         if (InputUtil.IsMouseButtonsSwapped)
                             ForwardMouseToWallpapers(e.X, e.Y, InputUtil.MouseLeftButtonUp);
                         break;
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error(ex);
+            }
+        }
+
+        private void RawInput_MouseWheelRaw(object sender, MouseWheelRawArgs e)
+        {
+            // Don't forward when not on desktop.
+            if (userSettings.Settings.InputForward == InputForwardMode.off || !IsDesktop())
+                return;
+
+            try
+            {
+                // Detect active wallpaper based on cursor.
+                var display = displayManager.GetDisplayMonitorFromPoint(new System.Drawing.Point(e.X, e.Y));
+                foreach (var wallpaper in Wallpapers)
+                {
+                    if (wallpaper.Category.IsDeviceInputAllowed() &&
+                        (display.Equals(wallpaper.Screen) || userSettings.Settings.WallpaperArrangement == WallpaperArrangement.span))
+                    {
+                        // WM_MOUSEWHEEL lParam is in screen coordinates; raw cursor pos is passed as-is.
+                        InputUtil.MouseWheel(wallpaper.InputHandle, e.X, e.Y, e.Delta);
+                    }
                 }
             }
             catch (Exception ex)
