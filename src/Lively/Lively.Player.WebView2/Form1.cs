@@ -513,6 +513,9 @@ namespace Lively.Player.WebView2
                     var vc = (LivelyVolumeCmd)obj;
                     webView.CoreWebView2.IsMuted = vc.Volume == 0;
                     break;
+                case MessageType.cmd_wheel:
+                    await ForwardWheelToPage((LivelyWheelCmd)obj);
+                    break;
                 case MessageType.cmd_screenshot:
                     var success = true;
                     var scr = (LivelyScreenshotCmd)obj;
@@ -577,6 +580,33 @@ namespace Lively.Player.WebView2
                     // Handle on caller
                     break;
             }
+        }
+
+        /// <summary>
+        /// WebView2 (Chromium) silently drops WM_MOUSEWHEEL posted to its windows, and
+        /// CDP Input.dispatchMouseEvent never completes in WebView2; the only reliable
+        /// path is synthesizing the wheel event inside the page. The script also emulates
+        /// the browser default action (scrolling the nearest scrollable ancestor) for
+        /// events the page itself does not consume.
+        /// </summary>
+        private async Task ForwardWheelToPage(LivelyWheelCmd cmd)
+        {
+            if (isPaused || webView?.CoreWebView2 == null)
+                return;
+
+            // Physical screen point -> CSS viewport point.
+            var origin = webView.PointToScreen(Point.Empty);
+            var scale = 96f / webView.DeviceDpi;
+            var x = (int)((cmd.X - origin.X) * scale);
+            var y = (int)((cmd.Y - origin.Y) * scale);
+            var script =
+                "(function(x,y,d){var el=document.elementFromPoint(x,y)||document.body;" +
+                "var ev=new WheelEvent('wheel',{bubbles:true,cancelable:true,clientX:x,clientY:y,deltaX:0,deltaY:d});" +
+                "if(!el.dispatchEvent(ev))return;" +
+                "var n=el;while(n&&n!==document.body){var st=getComputedStyle(n);" +
+                "if(/(auto|scroll)/.test(st.overflowY)&&n.scrollHeight>n.clientHeight){n.scrollTop+=d;return;}" +
+                "n=n.parentElement;}window.scrollBy(0,d);})(" + x + "," + y + "," + cmd.Delta + ")";
+            await webView.CoreWebView2.ExecuteScriptAsync(script);
         }
 
         private async Task HandleSuspend()

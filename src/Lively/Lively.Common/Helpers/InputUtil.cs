@@ -62,10 +62,10 @@ namespace Lively.Common.Helpers
             // lParam specifies the position of the cursor in screen coordinates.
             // Ref: https://docs.microsoft.com/en-us/windows/win32/inputdev/wm-mousewheel
             IntPtr wParam = (IntPtr)(((delta & 0xFFFF) << 16) | 0);
-            uint lParam = Convert.ToUInt32(y);
-            lParam <<= 16;
-            lParam |= Convert.ToUInt32(x);
-            NativeMethods.PostMessageW(hwnd, (int)NativeMethods.WM.MOUSEWHEEL, wParam, (UIntPtr)lParam);
+            // Pack as raw bits: screen coordinates can be negative on multi-monitor setups
+            // (displays left of/above the primary), which Convert.ToUInt32() would reject.
+            var lParam = (UIntPtr)(uint)((x & 0xFFFF) | (y << 16));
+            NativeMethods.PostMessageW(hwnd, (int)NativeMethods.WM.MOUSEWHEEL, wParam, lParam);
         }
 
         /// <summary>

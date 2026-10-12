@@ -124,9 +124,10 @@ namespace Lively.Views.WindowMsg
                             case Linearstar.Windows.RawInput.Native.RawMouseButtonFlags.MouseWheel:
                                 {
                                     // Mouse wheel deltas are multiples of WHEEL_DELTA (120);
-                                    // usButtonData carries the signed delta.
+                                    // the signed delta is carried in usButtonData (ButtonData property).
+                                    // RawButtons maps to ulRawButtons (raw device bits, usually 0) and is NOT the delta.
                                     // Ref: https://docs.microsoft.com/en-us/windows/win32/inputdev/raw-input
-                                    MouseWheelRaw?.Invoke(this, new MouseWheelRawArgs(P.X, P.Y, (short)mouse.Mouse.RawButtons));
+                                    MouseWheelRaw?.Invoke(this, new MouseWheelRawArgs(P.X, P.Y, mouse.Mouse.ButtonData));
                                 }
                                 break;
                         }

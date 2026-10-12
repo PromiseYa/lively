@@ -79,6 +79,9 @@ namespace Lively.Common.Helpers.Pinvoke
         [DllImport("user32.dll", ExactSpelling = true)]
         public static extern IntPtr GetAncestor(IntPtr hwnd, GetAncestorFlags flags);
 
+        [DllImport("user32.dll", ExactSpelling = true)]
+        public static extern IntPtr WindowFromPoint(POINT point);
+
         [DllImport("kernel32.dll", SetLastError = true)]
         public static extern bool QueryFullProcessImageName([In] IntPtr hProcess, [In] int dwFlags, [Out] StringBuilder lpExeName, ref int lpdwSize);
 
