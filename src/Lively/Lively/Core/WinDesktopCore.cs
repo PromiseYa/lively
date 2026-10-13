@@ -120,6 +120,25 @@ namespace Lively.Core
             // Initialize desktop and update handles.
             SetupDesktopLayer();
 
+            // Some startup races leave the raw input sink deaf until a re-register;
+            // heal once shortly after boot so wheel forwarding survives bad starts.
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(15));
+                    this.rawInput.Dispatcher.Invoke(() =>
+                    {
+                        this.rawInput.ReRegisterRawInputDevices();
+                        Logger.Info("Raw input devices re-registered (startup heal).");
+                    });
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error(ex);
+                }
+            });
+
             try
             {
                 if (workerW != IntPtr.Zero)

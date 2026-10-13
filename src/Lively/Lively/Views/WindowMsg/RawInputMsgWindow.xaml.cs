@@ -43,13 +43,15 @@ namespace Lively.Views.WindowMsg
                     RawInputDevice.RegisterDevice(HidUsageAndPage.Mouse,
                         RawInputDeviceFlags.ExInputSink, hwnd);
                     break;
-                case InputForwardMode.mousekeyboard:
-                    RawInputDevice.RegisterDevice(HidUsageAndPage.Mouse,
-                        RawInputDeviceFlags.ExInputSink, hwnd);
-                    RawInputDevice.RegisterDevice(HidUsageAndPage.Keyboard,
-                        RawInputDeviceFlags.ExInputSink, hwnd);
-                    break;
+                    case InputForwardMode.mousekeyboard:
+                        RawInputDevice.RegisterDevice(HidUsageAndPage.Mouse,
+                            RawInputDeviceFlags.ExInputSink, hwnd);
+                        RawInputDevice.RegisterDevice(HidUsageAndPage.Keyboard,
+                            RawInputDeviceFlags.ExInputSink, hwnd);
+                        break;
             }
+
+            NLog.LogManager.GetCurrentClassLogger().Info($"RawInput registered: mode={InputMode} hwnd={hwnd}");
 
             HwndSource source = HwndSource.FromHwnd(hwnd);
             source.AddHook(Hook);
