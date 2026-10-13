@@ -1350,6 +1350,17 @@ namespace Lively.Core
             }
         }
 
+        // 前台线程当前持有键盘焦点的窗口（壁纸 WebView2 输入法模式时 = 壁纸浏览器子窗口）
+        private static IntPtr ForegroundFocusHwnd()
+        {
+            var fg = NativeMethods.GetForegroundWindow();
+            if (fg == IntPtr.Zero)
+                return IntPtr.Zero;
+            var tid = NativeMethods.GetWindowThreadProcessId(fg, out _);
+            var info = new NativeMethods.GUITHREADINFO { cbSize = System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.GUITHREADINFO>() };
+            return NativeMethods.GetGUIThreadInfo(tid, ref info) ? info.hwndFocus : IntPtr.Zero;
+        }
+
         private void RawInput_KeyboardClickRaw(object sender, KeyboardClickRawArgs e)
         {
             try
@@ -1362,12 +1373,18 @@ namespace Lively.Core
                 if (!NativeMethods.GetCursorPos(out NativeMethods.POINT P))
                     return;
 
+                // 壁纸 WebView2 已持有真实键盘焦点（star-map 输入法模式）时：
+                // 系统 WM_KEYDOWN 直接投递给它，再转发一份会造成双字符。
+                var focus = ForegroundFocusHwnd();
                 var display = displayManager.GetDisplayMonitorFromPoint(new System.Drawing.Point(P.X, P.Y));
                 foreach (var wallpaper in Wallpapers)
                 {
                     if (wallpaper.Category.IsDeviceInputAllowed() &&
                         (display.Equals(wallpaper.Screen) || userSettings.Settings.WallpaperArrangement == WallpaperArrangement.span))
                     {
+                        if (focus != IntPtr.Zero &&
+                            (focus == wallpaper.InputHandle || NativeMethods.IsChild(wallpaper.InputHandle, focus)))
+                            continue;
                         InputUtil.ForwardMessageKeyboard(wallpaper.InputHandle, e.WindowMessage, e.VirtualKey, e.ScanCode, e.IsKeyDown);
                     }
                 }
