@@ -55,6 +55,32 @@ namespace Lively.Views.WindowMsg
             source.AddHook(Hook);
         }
 
+        /// <summary>
+        /// Raw input delivery can stop after a session lock/unlock cycle
+        /// (secure desktop switch); re-registering on unlock restores it.
+        /// </summary>
+        public void ReRegisterRawInputDevices()
+        {
+            var windowInteropHelper = new WindowInteropHelper(this);
+            var hwnd = windowInteropHelper.Handle;
+
+            switch (InputMode)
+            {
+                case InputForwardMode.off:
+                    break;
+                case InputForwardMode.mouse:
+                    RawInputDevice.RegisterDevice(HidUsageAndPage.Mouse,
+                        RawInputDeviceFlags.ExInputSink, hwnd);
+                    break;
+                case InputForwardMode.mousekeyboard:
+                    RawInputDevice.RegisterDevice(HidUsageAndPage.Mouse,
+                        RawInputDeviceFlags.ExInputSink, hwnd);
+                    RawInputDevice.RegisterDevice(HidUsageAndPage.Keyboard,
+                        RawInputDeviceFlags.ExInputSink, hwnd);
+                    break;
+            }
+        }
+
         private void Window_Closing(object sender, System.ComponentModel.CancelEventArgs e)
         {
             switch (InputMode)

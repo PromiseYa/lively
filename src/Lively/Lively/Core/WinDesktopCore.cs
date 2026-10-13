@@ -1130,6 +1130,18 @@ namespace Lively.Core
         {
             if (e.Reason == SessionSwitchReason.SessionUnlock)
             {
+                // Raw input delivery can silently die across a lock/unlock cycle;
+                // re-register so input forwarding keeps working without an app restart.
+                try
+                {
+                    this.rawInput.ReRegisterRawInputDevices();
+                    Logger.Info("Raw input devices re-registered after unlock.");
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error(ex);
+                }
+
                 if (userSettings.Settings.IsRestartAfterLockscreen)
                 {
                     Logger.Info("Desktop unlocked, resetting wallpaper service.");
@@ -1223,6 +1235,7 @@ namespace Lively.Core
         }
 
         private long lastWheelFwdLog;
+        private long lastWheelWpLog;
 
         private static bool IsCursorOverWindow(IntPtr hwnd, int x, int y)
         {
@@ -1244,28 +1257,39 @@ namespace Lively.Core
             {
                 // Detect active wallpaper based on cursor.
                 var display = displayManager.GetDisplayMonitorFromPoint(new System.Drawing.Point(e.X, e.Y));
+                if (Environment.TickCount64 - lastWheelFwdLog > 1000)
+                {
+                    lastWheelFwdLog = Environment.TickCount64;
+                    Logger.Info($"Wheel raw: ({e.X},{e.Y}) d={e.Delta} fgDesktop={IsDesktop()} disp={display?.DeviceId} nWp={Wallpapers.Count}");
+                }
                 foreach (var wallpaper in Wallpapers)
                 {
-                    if (wallpaper.Category.IsDeviceInputAllowed() &&
-                        (display.Equals(wallpaper.Screen) || userSettings.Settings.WallpaperArrangement == WallpaperArrangement.span))
+                    var allowed = wallpaper.Category.IsDeviceInputAllowed();
+                    var dispEq = display.Equals(wallpaper.Screen) || userSettings.Settings.WallpaperArrangement == WallpaperArrangement.span;
+                    if (Environment.TickCount64 - lastWheelWpLog > 1000)
                     {
-                        // Unlike clicks, hovering does not give the desktop foreground focus,
-                        // so requiring IsDesktop() alone would break hover-scrolling entirely.
-                        // Forward when the desktop is focused OR the cursor truly hovers this wallpaper.
-                        if (!IsDesktop() && !IsCursorOverWindow(wallpaper.InputHandle, e.X, e.Y))
-                            continue;
-                        if (Environment.TickCount64 - lastWheelFwdLog > 1000)
-                        {
-                            lastWheelFwdLog = Environment.TickCount64;
-                            Logger.Info($"Forwarding wheel to wallpaper: ({e.X},{e.Y}) delta={e.Delta} hwnd={wallpaper.InputHandle}");
-                        }
-                        // WM_MOUSEWHEEL lParam is in screen coordinates; raw cursor pos is passed as-is.
-                        // WebView2 (Chromium) drops posted wheel messages, so deliver through player IPC + CDP instead.
-                        if (wallpaper is WebWebView2 webWallpaper)
-                            webWallpaper.SendMessage(new LivelyWheelCmd { X = e.X, Y = e.Y, Delta = e.Delta });
-                        else
-                            InputUtil.MouseWheel(wallpaper.InputHandle, e.X, e.Y, e.Delta);
+                        lastWheelWpLog = Environment.TickCount64;
+                        Logger.Info($"Wheel wp: allowed={allowed} dispEq={dispEq} cat={wallpaper.Category} screen={wallpaper.Screen?.DeviceId} hwnd={wallpaper.InputHandle}");
                     }
+                    if (!allowed || !dispEq)
+                        continue;
+                    // Unlike clicks, hovering does not give the desktop foreground focus,
+                    // so requiring IsDesktop() alone would break hover-scrolling entirely.
+                    // Forward when the desktop is focused OR the cursor truly hovers this wallpaper.
+                    var overWallpaper = IsCursorOverWindow(wallpaper.InputHandle, e.X, e.Y);
+                    if (Environment.TickCount64 - lastWheelFwdLog > 1000)
+                    {
+                        lastWheelFwdLog = Environment.TickCount64;
+                        Logger.Info($"Wheel fwd check: overWp={overWallpaper}");
+                    }
+                    if (!IsDesktop() && !overWallpaper)
+                        continue;
+                    // WM_MOUSEWHEEL lParam is in screen coordinates; raw cursor pos is passed as-is.
+                    // WebView2 (Chromium) drops posted wheel messages, so deliver through player IPC + CDP instead.
+                    if (wallpaper is WebWebView2 webWallpaper)
+                        webWallpaper.SendMessage(new LivelyWheelCmd { X = e.X, Y = e.Y, Delta = e.Delta });
+                    else
+                        InputUtil.MouseWheel(wallpaper.InputHandle, e.X, e.Y, e.Delta);
                 }
             }
             catch (Exception ex)
