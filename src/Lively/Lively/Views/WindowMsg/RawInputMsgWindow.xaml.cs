@@ -44,12 +44,18 @@ namespace Lively.Views.WindowMsg
                         RawInputDeviceFlags.ExInputSink, hwnd);
                     break;
                     case InputForwardMode.mousekeyboard:
-                        RawInputDevice.RegisterDevice(HidUsageAndPage.Mouse,
-                            RawInputDeviceFlags.ExInputSink, hwnd);
-                        RawInputDevice.RegisterDevice(HidUsageAndPage.Keyboard,
-                            RawInputDeviceFlags.ExInputSink, hwnd);
-                        break;
+                    RawInputDevice.RegisterDevice(HidUsageAndPage.Mouse,
+                        RawInputDeviceFlags.ExInputSink, hwnd);
+                    RawInputDevice.RegisterDevice(HidUsageAndPage.Keyboard,
+                        RawInputDeviceFlags.ExInputSink, hwnd);
+                    break;
             }
+
+            // Touchpad two-finger scroll never reaches the raw mouse stream while the
+            // desktop icon view owns the hover (it becomes WM_POINTERWHEEL, eaten by
+            // explorer); subscribe to the touchpad's PTP HID collection separately.
+            if (InputMode != InputForwardMode.off)
+                PtpWheel.Register(hwnd);
 
             NLog.LogManager.GetCurrentClassLogger().Info($"RawInput registered: mode={InputMode} hwnd={hwnd}");
 
@@ -60,27 +66,38 @@ namespace Lively.Views.WindowMsg
         /// <summary>
         /// Raw input delivery can stop after a session lock/unlock cycle
         /// (secure desktop switch); re-registering on unlock restores it.
+        /// Registering an already-registered (usage, hwnd) pair is a silent
+        /// no-op for the OS, so remove first to force a route rebuild.
         /// </summary>
         public void ReRegisterRawInputDevices()
         {
             var windowInteropHelper = new WindowInteropHelper(this);
             var hwnd = windowInteropHelper.Handle;
 
-            switch (InputMode)
+            if (InputMode == InputForwardMode.off)
+                return;
+
+            var devices = InputMode == InputForwardMode.mousekeyboard
+                ? new[] { HidUsageAndPage.Mouse, HidUsageAndPage.Keyboard }
+                : new[] { HidUsageAndPage.Mouse };
+
+            foreach (var device in devices)
             {
-                case InputForwardMode.off:
-                    break;
-                case InputForwardMode.mouse:
-                    RawInputDevice.RegisterDevice(HidUsageAndPage.Mouse,
-                        RawInputDeviceFlags.ExInputSink, hwnd);
-                    break;
-                case InputForwardMode.mousekeyboard:
-                    RawInputDevice.RegisterDevice(HidUsageAndPage.Mouse,
-                        RawInputDeviceFlags.ExInputSink, hwnd);
-                    RawInputDevice.RegisterDevice(HidUsageAndPage.Keyboard,
-                        RawInputDeviceFlags.ExInputSink, hwnd);
-                    break;
+                try
+                {
+                    RawInputDevice.UnregisterDevice(device);
+                }
+                catch (Exception)
+                {
+                    // Removing a stale/absent registration can fail; registering again below is what matters.
+                }
             }
+            foreach (var device in devices)
+                RawInputDevice.RegisterDevice(device, RawInputDeviceFlags.ExInputSink, hwnd);
+
+            // The PTP subscription dies on the same secure-desktop switches; heal it too.
+            PtpWheel.Unregister(hwnd);
+            PtpWheel.Register(hwnd);
         }
 
         private void Window_Closing(object sender, System.ComponentModel.CancelEventArgs e)
@@ -97,6 +114,9 @@ namespace Lively.Views.WindowMsg
                     RawInputDevice.UnregisterDevice(HidUsageAndPage.Keyboard);
                     break;
             }
+
+            if (InputMode != InputForwardMode.off)
+                PtpWheel.Unregister(new WindowInteropHelper(this).Handle);
         }
 
         protected IntPtr Hook(IntPtr hwnd, int msg, IntPtr wparam, IntPtr lparam, ref bool handled)
@@ -104,6 +124,12 @@ namespace Lively.Views.WindowMsg
             // You can read inputs by processing the WM_INPUT message.
             if (msg == (int)NativeMethods.WM.INPUT)
             {
+                // PTP touchpad frames arrive as raw HID, which RawInput.Sharp does not
+                // decode; PtpWheel consumes any HID frame (raising wheel events for a
+                // two-finger scroll) and everything else falls through unchanged.
+                if (PtpWheel.TryProcessInput(lparam, this))
+                    return IntPtr.Zero;
+
                 // Create an RawInputData from the handle stored in lParam.
                 var data = RawInputData.FromHandle(lparam);
 
@@ -178,6 +204,15 @@ namespace Lively.Views.WindowMsg
                 }
             }
             return IntPtr.Zero;
+        }
+
+        /// <summary>
+        /// Raise a wheel event from the PTP two-finger gesture; identical to a physical
+        /// wheel downstream (hover gate + player IPC).
+        /// </summary>
+        internal void RaisePtpWheel(int x, int y, int delta)
+        {
+            MouseWheelRaw?.Invoke(this, new MouseWheelRawArgs(x, y, delta));
         }
     }
 

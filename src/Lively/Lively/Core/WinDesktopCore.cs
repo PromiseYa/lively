@@ -1166,6 +1166,26 @@ namespace Lively.Core
                     Logger.Error(ex);
                 }
 
+                // The unlock-time re-registration races with the desktop stack
+                // still restoring; schedule one more pass a few seconds later
+                // as a safety net (fire-and-forget, does not block wallpaper restore).
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(3000);
+                    try
+                    {
+                        System.Windows.Application.Current?.Dispatcher?.Invoke(() =>
+                        {
+                            this.rawInput.ReRegisterRawInputDevices();
+                            Logger.Info("Raw input devices re-registered (unlock second pass).");
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Error(ex);
+                    }
+                });
+
                 if (userSettings.Settings.IsRestartAfterLockscreen)
                 {
                     Logger.Info("Desktop unlocked, resetting wallpaper service.");
@@ -1310,6 +1330,8 @@ namespace Lively.Core
                         continue;
                     // WM_MOUSEWHEEL lParam is in screen coordinates; raw cursor pos is passed as-is.
                     // WebView2 (Chromium) drops posted wheel messages, so deliver through player IPC + CDP instead.
+                    // NB: the OS only synthesizes legacy queue wheel when the foreground is an app (not the
+                    // desktop); the player-side thread hook covers the rare window-aimed delivery as backup.
                     if (wallpaper is WebWebView2 webWallpaper)
                         webWallpaper.SendMessage(new LivelyWheelCmd
                         {

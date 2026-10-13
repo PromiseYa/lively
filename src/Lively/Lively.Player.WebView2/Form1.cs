@@ -16,6 +16,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -35,6 +36,101 @@ namespace Lively.Player.WebView2
         private IAudioVisualizerService visualizerService;
         private IHardwareUsageService hardwareUsageService;
         private INowPlayingService nowPlayingService;
+
+        // ------------------------------------------------------------------
+        // Touchpad wheel delivery (Win11 precision touchpad): two-finger scroll
+        // is synthesized by the OS as classic WM_MOUSEWHEEL with fine-grained
+        // deltas and delivered straight to the window under the cursor, without
+        // entering the raw input queue (the main app's raw-input listener never
+        // sees it) - and WebView2 drops wheel messages outright. A thread-local
+        // WH_GETMESSAGE hook observes every message retrieved on this UI thread
+        // for the whole window chain (this form + WebView2's Chrome children),
+        // so wheel is intercepted here and synthesized inside the page instead.
+        // ------------------------------------------------------------------
+        private const int WH_GETMESSAGE = 3;
+        private const uint WM_NULL = 0x0000;
+        private const uint WM_MOUSEWHEEL = 0x020A;
+        private const uint WM_MOUSEHWHEEL = 0x020E;
+        private const uint WM_POINTERWHEEL = 0x020F;
+        private const uint WM_POINTERHWHEEL = 0x0210;
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct MSGINFO
+        {
+            public IntPtr hwnd;
+            public uint message;
+            public IntPtr wParam;
+            public IntPtr lParam;
+            public uint time;
+            public int ptX;
+            public int ptY;
+        }
+
+        private delegate IntPtr HookProc(int code, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("user32.dll")] private static extern IntPtr SetWindowsHookEx(int idHook, HookProc lpfn, IntPtr hMod, uint dwThreadId);
+        [DllImport("user32.dll")] private static extern bool UnhookWindowsHookEx(IntPtr hhk);
+        [DllImport("user32.dll")] private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+        [DllImport("kernel32.dll")] private static extern IntPtr GetModuleHandle(string moduleName);
+        [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
+        [DllImport("user32.dll")] private static extern IntPtr GetAncestor(IntPtr hwnd, uint gaFlags);
+
+        private IntPtr wheelHook;
+        private HookProc wheelHookProc; // rooted to prevent GC while installed
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            wheelHookProc = WheelMsgHookProc;
+            wheelHook = SetWindowsHookEx(WH_GETMESSAGE, wheelHookProc,
+                GetModuleHandle(null), GetCurrentThreadId());
+        }
+
+        protected override void OnHandleDestroyed(EventArgs e)
+        {
+            if (wheelHook != IntPtr.Zero)
+            {
+                UnhookWindowsHookEx(wheelHook);
+                wheelHook = IntPtr.Zero;
+            }
+            base.OnHandleDestroyed(e);
+        }
+
+        private IntPtr WheelMsgHookProc(int nCode, IntPtr wParam, IntPtr lParam)
+        {
+            // HC_ACTION (0) with nonzero wParam: the message is being removed;
+            // peek-only passes (wParam == 0) are skipped to avoid double handling.
+            if (nCode == 0 && wParam != IntPtr.Zero && lParam != IntPtr.Zero && !IsDisposed)
+            {
+                var m = (MSGINFO)Marshal.PtrToStructure(lParam, typeof(MSGINFO));
+                var isWheel = m.message == WM_MOUSEWHEEL || m.message == WM_MOUSEHWHEEL
+                    || m.message == WM_POINTERWHEEL || m.message == WM_POINTERHWHEEL;
+                // GA_ROOT (2): only messages aimed at this form's window chain;
+                // the WebView2 Chrome children resolve to this form as root.
+                if (isWheel && GetAncestor(m.hwnd, 2) == Handle)
+                {
+                    var horizontal = m.message == WM_MOUSEHWHEEL || m.message == WM_POINTERHWHEEL;
+                    var delta = (short)((long)m.wParam >> 16);
+                    // Pointer-wheel deltas can carry huge flick values; clamp so a
+                    // single event cannot jump the page by whole screens.
+                    if (delta > 400) delta = 400;
+                    if (delta < -400) delta = -400;
+                    var x = (short)((long)m.lParam & 0xFFFF);
+                    var y = (short)(((long)m.lParam >> 16) & 0xFFFF);
+                    _ = ForwardWheelToPage(new LivelyWheelCmd
+                    {
+                        X = x,
+                        Y = y,
+                        Delta = horizontal ? 0 : delta,
+                        DeltaX = horizontal ? delta : 0,
+                    });
+                    // WebView2 drops these anyway; rewrite to WM_NULL so the page
+                    // can never receive a double delivery if Chromium changes.
+                    Marshal.WriteInt32(lParam, 8, (int)WM_NULL);
+                }
+            }
+            return CallNextHookEx(wheelHook, nCode, wParam, lParam);
+        }
 
         private bool IsDebugging { get; } = BuildInfoUtil.IsDebugBuild();
 
