@@ -366,38 +366,83 @@ namespace Lively.Player.WebView2
         // 页面 input 聚焦时 postMessage("star-input-focus")：把键盘焦点真实交给 WebView2。
         // 桌面（WorkerW/Progman）仍是前台窗口，通过 AttachThreadInput 挂到前台线程后 SetFocus，
         // 系统 WM_KEYDOWN 直接投递给 WebView2、IME（中文输入法）随之挂上——绕开主程序
-        // PostMessage 转发那条挂不了输入法的老路。焦点离开交给系统自然切换（用户点别处即走）。
+        // PostMessage 转发那条挂不了输入法的老路。
+        // 焦点保持：系统/任务栏会把焦点抢回去（输入框 focus/blur 抖动=页面提示反复弹），
+        // 收到 focus 后 18 秒内每 400ms 检查一次，焦点丢且前台仍是桌面就立刻抢回；blur 即停。
         [DllImport("user32.dll")] private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
         [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+        private System.Windows.Forms.Timer focusKeepTimer;
+        private int focusKeepTicks;
+
+        private void StopFocusKeep()
+        {
+            BeginInvoke((MethodInvoker)(() => focusKeepTimer?.Stop()));
+        }
+
+        private void SetWebViewFocus()
+        {
+            var fg = NativeMethods.GetForegroundWindow();
+            if (fg == IntPtr.Zero)
+                return;
+            var fgTid = GetWindowThreadProcessId(fg, out _);
+            var myTid = GetCurrentThreadId();
+            if (fgTid != myTid)
+                AttachThreadInput(fgTid, myTid, true);
+            NativeMethods.SetFocus(webView.Handle);
+            if (fgTid != myTid)
+                AttachThreadInput(fgTid, myTid, false);
+        }
 
         private void CoreWebView2_WebMessageReceived(object sender, CoreWebView2WebMessageReceivedEventArgs e)
         {
             try
             {
                 var msg = (e.TryGetWebMessageAsString() ?? string.Empty).Trim();
-                if (msg != "star-input-focus")
-                    return;
-                "star-input-focus: attaching keyboard focus".SendLog(SendToParent);
-                BeginInvoke((MethodInvoker)(() =>
+                if (msg == "star-input-focus")
                 {
-                    try
+                    "star-input-focus: attaching keyboard focus".SendLog(SendToParent);
+                    BeginInvoke((MethodInvoker)(() =>
                     {
-                        var fg = NativeMethods.GetForegroundWindow();
-                        if (fg == IntPtr.Zero)
-                            return;
-                        var fgTid = GetWindowThreadProcessId(fg, out _);
-                        var myTid = GetCurrentThreadId();
-                        if (fgTid != myTid)
-                            AttachThreadInput(fgTid, myTid, true);
-                        NativeMethods.SetFocus(webView.Handle);
-                        if (fgTid != myTid)
-                            AttachThreadInput(fgTid, myTid, false);
-                    }
-                    catch (Exception ex)
-                    {
-                        ex.SendError(SendToParent, "star-input-focus failed");
-                    }
-                }));
+                        try
+                        {
+                            SetWebViewFocus();
+                            focusKeepTicks = 0;
+                            if (focusKeepTimer == null)
+                            {
+                                focusKeepTimer = new System.Windows.Forms.Timer { Interval = 400 };
+                                focusKeepTimer.Tick += (s, ev) =>
+                                {
+                                    try
+                                    {
+                                        focusKeepTicks++;
+                                        if (focusKeepTicks > 45) { focusKeepTimer.Stop(); return; }   // 最长约 18 秒
+                                        var fg = NativeMethods.GetForegroundWindow();
+                                        if (fg == IntPtr.Zero) return;
+                                        // 前台还是桌面（用户没切去别的应用）且焦点不在 WebView2 → 抢回
+                                        var fgTid = GetWindowThreadProcessId(fg, out _);
+                                        var info = new NativeMethods.GUITHREADINFO { cbSize = System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.GUITHREADINFO>() };
+                                        var focused = NativeMethods.GetGUIThreadInfo(fgTid, ref info) ? info.hwndFocus : IntPtr.Zero;
+                                        bool mine = focused == webView.Handle || NativeMethods.IsChild(webView.Handle, focused);
+                                        if (!mine)
+                                            SetWebViewFocus();
+                                    }
+                                    catch { focusKeepTimer?.Stop(); }
+                                };
+                            }
+                            focusKeepTimer.Stop();
+                            focusKeepTimer.Start();
+                        }
+                        catch (Exception ex)
+                        {
+                            ex.SendError(SendToParent, "star-input-focus failed");
+                        }
+                    }));
+                }
+                else if (msg == "star-input-blur")
+                {
+                    StopFocusKeep();
+                }
             }
             catch { }
         }
