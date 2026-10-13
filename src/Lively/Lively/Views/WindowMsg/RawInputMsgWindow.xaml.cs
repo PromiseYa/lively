@@ -156,6 +156,12 @@ namespace Lively.Views.WindowMsg
                                     MouseWheelRaw?.Invoke(this, new MouseWheelRawArgs(P.X, P.Y, mouse.Mouse.ButtonData));
                                 }
                                 break;
+                            case Linearstar.Windows.RawInput.Native.RawMouseButtonFlags.MouseHorizontalWheel:
+                                {
+                                    // Horizontal wheel (touchpad side-swipe): same usButtonData payload.
+                                    MouseWheelRaw?.Invoke(this, new MouseWheelRawArgs(P.X, P.Y, mouse.Mouse.ButtonData, horizontal: true));
+                                }
+                                break;
                         }
                         break;
                     case RawInputKeyboardData keyboard:
@@ -202,13 +208,19 @@ namespace Lively.Views.WindowMsg
     public class MouseWheelRawArgs : MouseRawArgs
     {
         /// <summary>
-        /// Wheel delta, multiples of WHEEL_DELTA (120); positive = forward/away.
+        /// Wheel delta, multiples of WHEEL_DELTA (120); positive = forward/away (or right when Horizontal).
         /// </summary>
         public int Delta { get; }
 
-        public MouseWheelRawArgs(int x, int y, int delta) : base(x, y)
+        /// <summary>
+        /// true when the gesture is a horizontal wheel (touchpad side-swipe).
+        /// </summary>
+        public bool Horizontal { get; }
+
+        public MouseWheelRawArgs(int x, int y, int delta, bool horizontal = false) : base(x, y)
         {
             Delta = delta;
+            Horizontal = horizontal;
         }
     }
 

@@ -1134,8 +1134,13 @@ namespace Lively.Core
                 // re-register so input forwarding keeps working without an app restart.
                 try
                 {
-                    this.rawInput.ReRegisterRawInputDevices();
-                    Logger.Info("Raw input devices re-registered after unlock.");
+                    // SessionSwitch arrives on a non-UI thread; the WPF window
+                    // (and its hwnd) must be touched from the dispatcher only.
+                    System.Windows.Application.Current?.Dispatcher?.Invoke(() =>
+                    {
+                        this.rawInput.ReRegisterRawInputDevices();
+                        Logger.Info("Raw input devices re-registered after unlock.");
+                    });
                 }
                 catch (Exception ex)
                 {
@@ -1287,7 +1292,13 @@ namespace Lively.Core
                     // WM_MOUSEWHEEL lParam is in screen coordinates; raw cursor pos is passed as-is.
                     // WebView2 (Chromium) drops posted wheel messages, so deliver through player IPC + CDP instead.
                     if (wallpaper is WebWebView2 webWallpaper)
-                        webWallpaper.SendMessage(new LivelyWheelCmd { X = e.X, Y = e.Y, Delta = e.Delta });
+                        webWallpaper.SendMessage(new LivelyWheelCmd
+                        {
+                            X = e.X,
+                            Y = e.Y,
+                            Delta = e.Horizontal ? 0 : e.Delta,
+                            DeltaX = e.Horizontal ? e.Delta : 0,
+                        });
                     else
                         InputUtil.MouseWheel(wallpaper.InputHandle, e.X, e.Y, e.Delta);
                 }

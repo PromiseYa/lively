@@ -600,12 +600,13 @@ namespace Lively.Player.WebView2
             var x = (int)((cmd.X - origin.X) * scale);
             var y = (int)((cmd.Y - origin.Y) * scale);
             var script =
-                "(function(x,y,d){var el=document.elementFromPoint(x,y)||document.body;" +
-                "var ev=new WheelEvent('wheel',{bubbles:true,cancelable:true,clientX:x,clientY:y,deltaX:0,deltaY:d});" +
+                "(function(x,y,d,dx){var el=document.elementFromPoint(x,y)||document.body;" +
+                "var ev=new WheelEvent('wheel',{bubbles:true,cancelable:true,clientX:x,clientY:y,deltaX:dx||0,deltaY:d||0});" +
                 "if(!el.dispatchEvent(ev))return;" +
                 "var n=el;while(n&&n!==document.body){var st=getComputedStyle(n);" +
                 "if(/(auto|scroll)/.test(st.overflowY)&&n.scrollHeight>n.clientHeight){n.scrollTop+=d;return;}" +
-                "n=n.parentElement;}window.scrollBy(0,d);})(" + x + "," + y + "," + cmd.Delta + ")";
+                "if(/(auto|scroll)/.test(st.overflowX)&&n.scrollWidth>n.clientWidth){n.scrollLeft+=dx;return;}" +
+                "n=n.parentElement;}window.scrollBy(dx||0,d||0);})(" + x + "," + y + "," + cmd.Delta + "," + cmd.DeltaX + ")";
             await webView.CoreWebView2.ExecuteScriptAsync(script);
         }
 
