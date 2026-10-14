@@ -10,6 +10,7 @@ using Lively.Models.Message;
 using Lively.Player.WebView2.Extensions.WebView2;
 using Microsoft.Web.WebView2.Core;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -363,35 +364,97 @@ namespace Lively.Player.WebView2
         }
 
         // —— 壁纸输入法支持（star-map 页触发）——
-        // 页面 input 聚焦时 postMessage("star-input-focus")：把键盘焦点真实交给 WebView2。
-        // 桌面（WorkerW/Progman）仍是前台窗口，通过 AttachThreadInput 挂到前台线程后 SetFocus，
-        // 系统 WM_KEYDOWN 直接投递给 WebView2、IME（中文输入法）随之挂上——绕开主程序
-        // PostMessage 转发那条挂不了输入法的老路。
-        // 焦点保持：系统/任务栏会把焦点抢回去（输入框 focus/blur 抖动=页面提示反复弹），
-        // 收到 focus 后 18 秒内每 400ms 检查一次，焦点丢且前台仍是桌面就立刻抢回；blur 即停。
+        // 页面 input 聚焦时 postMessage({"type":"star-input-focus",x,y,w,h})（设备像素，相对壁纸客户区）：
+        // 播放器在输入框正上方浮一个原生无边框小窗 + TextBox。原生顶层窗口能拿真实前台，
+        // 系统 IME（中文输入法）随之挂上——彻底绕开"桌面持前台、壁纸子窗口抢焦点"的抖动战争
+        // （旧方案的 SetFocus 抢焦点会被系统反复抢回，焦点抖动=页面提示反复弹、IME 挂不稳）。
+        // Enter=提交（ExecuteScriptAsync 回填页面并检索）；Esc/点到别处=关闭并通知页面失焦。
+        // 原生框持前台期间主程序键盘转发自动停（IsDesktop()=false），无双字符。
         [DllImport("user32.dll")] private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
         [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
 
-        private System.Windows.Forms.Timer focusKeepTimer;
-        private int focusKeepTicks;
+        private NativeInputBox nativeInput;
 
-        private void StopFocusKeep()
+        // 原生输入小窗：1px 亮边 + 深底文本框，视觉贴近星图查询框
+        private class NativeInputBox : Form
         {
-            BeginInvoke((MethodInvoker)(() => focusKeepTimer?.Stop()));
+            public TextBox Box;
+            public NativeInputBox()
+            {
+                FormBorderStyle = FormBorderStyle.None;
+                ShowInTaskbar = false;
+                TopMost = true;
+                StartPosition = FormStartPosition.Manual;
+                BackColor = Color.FromArgb(62, 66, 70);          // 充当 1px 边框
+                Padding = new Padding(1);
+                var panel = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(16, 17, 18), Padding = new Padding(9, 7, 9, 6) };
+                Box = new TextBox
+                {
+                    Dock = DockStyle.Fill,
+                    BackColor = Color.FromArgb(16, 17, 18),
+                    ForeColor = Color.FromArgb(232, 231, 226),
+                    BorderStyle = BorderStyle.None,
+                    Font = new Font("Microsoft YaHei UI", 10.5f)
+                };
+                panel.Controls.Add(Box);
+                Controls.Add(panel);
+            }
         }
 
-        private void SetWebViewFocus()
+        private void ShowNativeInput(int x, int y, int w, int h)
         {
+            if (nativeInput == null)
+            {
+                nativeInput = new NativeInputBox();
+                nativeInput.Box.KeyDown += (s, ev) =>
+                {
+                    if (ev.KeyCode == Keys.Enter)
+                    {
+                        ev.SuppressKeyPress = true;
+                        var text = nativeInput.Box.Text;
+                        HideNativeInput(false);
+                        RunPageScript($"window.__starNativeSubmit && window.__starNativeSubmit({JsonConvert.SerializeObject(text)})");
+                    }
+                    else if (ev.KeyCode == Keys.Escape)
+                    {
+                        ev.SuppressKeyPress = true;
+                        HideNativeInput(true);
+                    }
+                };
+                nativeInput.Deactivate += (s, ev) => nativeInput.BeginInvoke((MethodInvoker)(() => HideNativeInput(true)));
+            }
+            nativeInput.Bounds = new Rectangle(this.PointToScreen(new Point(x, y)), new Size(Math.Max(w, 220), Math.Max(h, 26) + 16));
+            nativeInput.Box.Text = string.Empty;
+            nativeInput.Show(this);
+            // 后台进程直接 SetForegroundWindow 会被系统拒绝：挂上前台线程的输入队列再顶前台（经典手法）
             var fg = NativeMethods.GetForegroundWindow();
-            if (fg == IntPtr.Zero)
-                return;
             var fgTid = GetWindowThreadProcessId(fg, out _);
             var myTid = GetCurrentThreadId();
-            if (fgTid != myTid)
-                AttachThreadInput(fgTid, myTid, true);
-            NativeMethods.SetFocus(webView.Handle);
-            if (fgTid != myTid)
-                AttachThreadInput(fgTid, myTid, false);
+            if (fgTid != myTid) AttachThreadInput(fgTid, myTid, true);
+            NativeMethods.SetForegroundWindow(nativeInput.Handle);
+            if (fgTid != myTid) AttachThreadInput(fgTid, myTid, false);
+            nativeInput.Activate();
+            nativeInput.Box.Focus();
+        }
+
+        private void HideNativeInput(bool notifyBlur)
+        {
+            if (nativeInput == null || !nativeInput.Visible)
+                return;
+            nativeInput.Visible = false;   // 先置不可见再 Hide：Hide 触发的 Deactivate 会二次进来，靠此旗标短路
+            nativeInput.Hide();
+            if (notifyBlur)
+                RunPageScript("window.__starNativeBlur && window.__starNativeBlur()");
+        }
+
+        private async void RunPageScript(string script)
+        {
+            try
+            {
+                if (webView?.CoreWebView2 != null)
+                    await webView.CoreWebView2.ExecuteScriptAsync(script);
+            }
+            catch { }
         }
 
         private void CoreWebView2_WebMessageReceived(object sender, CoreWebView2WebMessageReceivedEventArgs e)
@@ -399,49 +462,28 @@ namespace Lively.Player.WebView2
             try
             {
                 var msg = (e.TryGetWebMessageAsString() ?? string.Empty).Trim();
-                if (msg == "star-input-focus")
+                if (msg.StartsWith("star-input-focus"))
                 {
-                    "star-input-focus: attaching keyboard focus".SendLog(SendToParent);
+                    int x = 40, y = 40, w = 460, h = 34;   // 无坐标时的兜底位
+                    try
+                    {
+                        if (msg.StartsWith("{"))
+                        {
+                            var j = JObject.Parse(msg);
+                            x = (int)j["x"]; y = (int)j["y"]; w = (int)j["w"]; h = (int)j["h"];
+                        }
+                    }
+                    catch { }
+                    "star-input-focus: native ime box".SendLog(SendToParent);
                     BeginInvoke((MethodInvoker)(() =>
                     {
-                        try
-                        {
-                            SetWebViewFocus();
-                            focusKeepTicks = 0;
-                            if (focusKeepTimer == null)
-                            {
-                                focusKeepTimer = new System.Windows.Forms.Timer { Interval = 400 };
-                                focusKeepTimer.Tick += (s, ev) =>
-                                {
-                                    try
-                                    {
-                                        focusKeepTicks++;
-                                        if (focusKeepTicks > 45) { focusKeepTimer.Stop(); return; }   // 最长约 18 秒
-                                        var fg = NativeMethods.GetForegroundWindow();
-                                        if (fg == IntPtr.Zero) return;
-                                        // 前台还是桌面（用户没切去别的应用）且焦点不在 WebView2 → 抢回
-                                        var fgTid = GetWindowThreadProcessId(fg, out _);
-                                        var info = new NativeMethods.GUITHREADINFO { cbSize = System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.GUITHREADINFO>() };
-                                        var focused = NativeMethods.GetGUIThreadInfo(fgTid, ref info) ? info.hwndFocus : IntPtr.Zero;
-                                        bool mine = focused == webView.Handle || NativeMethods.IsChild(webView.Handle, focused);
-                                        if (!mine)
-                                            SetWebViewFocus();
-                                    }
-                                    catch { focusKeepTimer?.Stop(); }
-                                };
-                            }
-                            focusKeepTimer.Stop();
-                            focusKeepTimer.Start();
-                        }
-                        catch (Exception ex)
-                        {
-                            ex.SendError(SendToParent, "star-input-focus failed");
-                        }
+                        try { ShowNativeInput(x, y, w, h); }
+                        catch (Exception ex) { ex.SendError(SendToParent, "native input failed"); }
                     }));
                 }
                 else if (msg == "star-input-blur")
                 {
-                    StopFocusKeep();
+                    BeginInvoke((MethodInvoker)(() => HideNativeInput(false)));
                 }
             }
             catch { }
